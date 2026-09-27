@@ -6,6 +6,7 @@ import random
 import string
 import pandas as pd
 import streamlit as st
+import os
 
 # Configuración de página
 st.set_page_config(
@@ -56,6 +57,12 @@ def init_db():
         ),
     )
 
+  # Actualizar tabla empresa para guardar la última tarifa usada
+  try:
+      cursor.execute("ALTER TABLE empresa ADD COLUMN TARIFA_DEFECTO REAL DEFAULT 25.0")
+  except sqlite3.OperationalError:
+      pass # La columna ya existe
+
   cursor.execute(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='control';"
   )
@@ -69,6 +76,12 @@ def init_db():
         df[col] = df[col].astype(str).str.upper()
       df.columns = [c.upper() for c in df.columns]
       df.to_sql(sheet.lower(), conn, if_exists="replace", index=False)
+
+  # Actualizar tabla control para que el historial respete la tarifa de su fecha
+  try:
+      cursor.execute("ALTER TABLE control ADD COLUMN TARIFA REAL DEFAULT 25.0")
+  except sqlite3.OperationalError:
+      pass # La columna ya existe
 
   conn.commit()
   conn.close()
@@ -92,7 +105,10 @@ def execute_query(query, params=()):
   conn.close()
 
 
-# --- MENÚ LATERAL ---
+# --- MENÚ LATERAL Y LOGO ---
+if os.path.exists("logo.jpeg"):
+    st.sidebar.image("logo.jpeg", width=150) # Imagen pequeña en la esquina superior izquierda
+
 st.sidebar.title("⚓ LIFRAN NAVEGACIÓN")
 menu_opciones = [
     "CONTROL OPERATIVO",
@@ -100,7 +116,7 @@ menu_opciones = [
     "LUGARES Y PUERTOS",
     "BUQUES",
     "MUELLES",
-    "ELIMINAR REGISTROS",
+    "EDITAR / ELIMINAR REGISTROS",
     "REPORTES Y RESUMEN",
     "CONFIGURACIÓN RECIBO WHATSAPP",
 ]
@@ -109,10 +125,14 @@ choice = st.sidebar.selectbox("SELECCIONE VISTA", menu_opciones)
 st.title(f"MÓDULO: {choice}")
 
 # -----------------------------------------------------------------------------
-# 1. CONTROL OPERATIVO (DASHBOARD DINÁMICO)
+# 1. CONTROL OPERATIVO
 # -----------------------------------------------------------------------------
 if choice == "CONTROL OPERATIVO":
   st.subheader("REGISTRO Y CONTROL DE ALQUILER DE BAÑOS PORTÁTILES (USD)")
+
+  # Leer la última tarifa guardada
+  df_emp = run_query("SELECT * FROM empresa LIMIT 1")
+  tarifa_guardada = float(df_emp["TARIFA_DEFECTO"].iloc[0]) if "TARIFA_DEFECTO" in df_emp.columns and not pd.isna(df_emp["TARIFA_DEFECTO"].iloc[0]) else 25.0
 
   df_cli = run_query(
       "SELECT IDCLIENTE, NOMBRE, RIF, DIRECCION, TELEFONO FROM cliente"
@@ -183,7 +203,7 @@ if choice == "CONTROL OPERATIVO":
       nuevo_mue_numero = st.text_input("NÚMERO DE MUELLE").upper()
 
     st.markdown("---")
-    # Fechas (Formato visual estricto DD/MM/AA)
+    # Fechas (Formato visual estricto DD/MM/YYYY)
     f_inicio = st.date_input(
         "FECHA DE INICIO (DD/MM/AA)",
         value=date.today(),
@@ -197,8 +217,10 @@ if choice == "CONTROL OPERATIVO":
     num_cabinas = st.number_input(
         "CANTIDAD DE BAÑOS / CABINAS", min_value=1, value=1
     )
+    
+    # Campo de tarifa trayendo el último valor guardado por defecto
     tarifa_usd = st.number_input(
-        "TARIFA DIARIA POR BAÑO (USD $)", min_value=0.0, value=25.0
+        "TARIFA DIARIA POR BAÑO (USD $)", min_value=0.0, value=tarifa_guardada
     )
 
     # --- CÁLCULO DINÁMICO DEL TOTAL ---
@@ -270,15 +292,18 @@ if choice == "CONTROL OPERATIVO":
     else:
       m_id = df_mue[df_mue["NUMEROMUELLE"].astype(str) == sel_mue]["IDMUELLE"].values[0]
 
-    # 5. Guardar el Operativo si no hubo errores
+    # 5. Guardar el Operativo y actualizar memoria de Tarifa
     if not error:
+      # Actualizar la tarifa guardada en empresa
+      execute_query("UPDATE empresa SET TARIFA_DEFECTO = ? WHERE id = ?", (tarifa_usd, df_emp["id"].iloc[0]))
+      
       id_control = generar_id_control()
       execute_query(
-          """INSERT INTO control (IDCONTROL, CLIENTE, LUGAR, BUQUE, MUELLE, FECHAINICIO, FECHATERMINACION, NUMEROCABINAS, OBSERVACIONES)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+          """INSERT INTO control (IDCONTROL, CLIENTE, LUGAR, BUQUE, MUELLE, FECHAINICIO, FECHATERMINACION, NUMEROCABINAS, OBSERVACIONES, TARIFA)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
           (
               id_control, c_id, l_id, b_id, m_id,
-              str(f_inicio), str(f_terminacion), num_cabinas, observaciones
+              str(f_inicio), str(f_terminacion), num_cabinas, observaciones, tarifa_usd
           ),
       )
       st.success("¡OPERACIÓN REGISTRADA EXITOSAMENTE CON TODOS LOS DATOS NUEVOS!")
@@ -288,11 +313,10 @@ if choice == "CONTROL OPERATIVO":
   st.divider()
   st.subheader("HISTORIAL DE OPERACIONES Y ENVÍO DE RECIBO POR WHATSAPP")
 
-  # Extraemos el rowid para forzar orden DESCENDENTE desde SQLite
   query_sql = """
         SELECT c.rowid, c.IDCONTROL, cl.NOMBRE as CLIENTE_NOMBRE, l.LUGAR as LUGAR_NOMBRE, 
                b.NOMBREBUQUE, m.NUMEROMUELLE, c.FECHAINICIO, c.FECHATERMINACION, 
-               c.NUMEROCABINAS, c.OBSERVACIONES, cl.TELEFONO
+               c.NUMEROCABINAS, c.OBSERVACIONES, cl.TELEFONO, c.TARIFA
         FROM control c
         LEFT JOIN cliente cl ON c.CLIENTE = cl.IDCLIENTE
         LEFT JOIN lugar l ON c.LUGAR = l.IDLUGAR
@@ -308,29 +332,41 @@ if choice == "CONTROL OPERATIVO":
 
     df_ops["DIAS"] = (df_ops["FECHATERMINACION_DT"] - df_ops["FECHAINICIO_DT"]).dt.days + 1
     df_ops["DIAS"] = df_ops["DIAS"].fillna(1).apply(lambda x: max(1, x))
-    df_ops["TARIFA_USD"] = 25.0
-    df_ops["TOTAL_USD"] = df_ops["DIAS"] * df_ops["NUMEROCABINAS"].fillna(1) * df_ops["TARIFA_USD"]
+    
+    # Asegurar que NUMEROCABINAS y TARIFA sean numéricos
+    df_ops["NUMEROCABINAS"] = pd.to_numeric(df_ops["NUMEROCABINAS"], errors="coerce").fillna(1)
+    df_ops["TARIFA"] = pd.to_numeric(df_ops["TARIFA"], errors="coerce")
+    
+    df_ops["TARIFA_USD"] = df_ops["TARIFA"].fillna(25.0)
+    df_ops["TOTAL_USD"] = df_ops["DIAS"] * df_ops["NUMEROCABINAS"] * df_ops["TARIFA_USD"]
 
     display_df = df_ops.copy()
-    # Aplicar formato exacto DD/MM/YYYY a la tabla
     display_df["FECHAINICIO"] = display_df["FECHAINICIO_DT"].dt.strftime("%d/%m/%Y")
     display_df["FECHATERMINACION"] = display_df["FECHATERMINACION_DT"].dt.strftime("%d/%m/%Y")
+    
+    # Renombrar columnas para la grilla
+    display_df = display_df.rename(columns={
+        "IDCONTROL": "Nº_CONTROL",
+        "CLIENTE_NOMBRE": "CLIENTE",
+        "LUGAR_NOMBRE": "PUERTO",
+        "NOMBREBUQUE": "BUQUE",
+        "NUMEROMUELLE": "MUELLE",
+        "NUMEROCABINAS": "BAÑOS",
+    })
 
-    # Mostrar dataframe SIN el ID de control y SIN el rowid, solo la información necesaria
     st.dataframe(
         display_df[[
-            "CLIENTE_NOMBRE", "LUGAR_NOMBRE", "NOMBREBUQUE",
-            "NUMEROMUELLE", "FECHAINICIO", "FECHATERMINACION",
-            "NUMEROCABINAS", "DIAS", "TOTAL_USD", "OBSERVACIONES"
+            "Nº_CONTROL", "CLIENTE", "PUERTO", "BUQUE",
+            "MUELLE", "FECHAINICIO", "FECHATERMINACION",
+            "BAÑOS", "DIAS", "TARIFA_USD", "TOTAL_USD", "OBSERVACIONES"
         ]],
         hide_index=True
     )
 
     st.markdown("### 📱 GENERAR Y ENVIAR RECIBO POR WHATSAPP")
-    # Generar un diccionario para el selectbox de recibos, usando (Control + Cliente + Fecha)
     op_dict = dict(zip(
-        "Nº " + display_df["IDCONTROL"] + " | " + display_df["CLIENTE_NOMBRE"] + " (" + display_df["FECHAINICIO"] + ")", 
-        display_df["IDCONTROL"]
+        "Nº " + display_df["Nº_CONTROL"] + " | " + display_df["CLIENTE"].fillna('N/D') + " (" + display_df["FECHAINICIO"].fillna('N/D') + ")", 
+        df_ops["IDCONTROL"] # Usamos el df original para el value
     ))
     sel_op_name = st.selectbox("SELECCIONE OPERACIÓN PARA RECIBO", list(op_dict.keys()))
 
@@ -341,25 +377,22 @@ if choice == "CONTROL OPERATIVO":
 
       f_ini_str = row["FECHAINICIO_DT"].strftime("%d/%m/%Y") if pd.notnull(row["FECHAINICIO_DT"]) else "N/D"
       f_fin_str = row["FECHATERMINACION_DT"].strftime("%d/%m/%Y") if pd.notnull(row["FECHATERMINACION_DT"]) else "N/D"
+      
+      dias = int(row['DIAS'])
 
+      # Formato exacto solicitado en la imagen
       recibo_msj = f"""*--- {empresa['NOMBRE']} ---*
-RIF: {empresa['RIF']} | TLF: {empresa['TELEFONO']}
+RIF: {empresa['RIF']}
+TLF: {empresa['TELEFONO']}
 *NOTA DE ENTREGA / RECIBO DE ALQUILER*
 *CONTROL Nº:* {row['IDCONTROL']}
 ---------------------------------------
 *CLIENTE:* {row['CLIENTE_NOMBRE']}
 *PUERTO / LUGAR:* {row['LUGAR_NOMBRE']}
 *BUQUE:* {row['NOMBREBUQUE']} (MUELLE N° {row['NUMEROMUELLE']})
-*PERÍODO:* {f_ini_str} AL {f_fin_str} ({int(row['DIAS'])} DÍAS)
-*CANTIDAD DE BAÑOS:* {int(row['NUMEROCABINAS']) if pd.notnull(row['NUMEROCABINAS']) else 1}
-*TARIFA DIARIA:* ${row['TARIFA_USD']:.2f} USD
----------------------------------------
-*TOTAL A PAGAR: ${row['TOTAL_USD']:.2f} USD*
-*OBSERVACIONES:* {row['OBSERVACIONES']}
----------------------------------------
-{empresa['PIE_PAGINA']}"""
+*PERÍODO:* {f_ini_str} AL {f_fin_str} ({dias} DÍAS)"""
 
-      st.text_area("VISTA PREVIA DEL RECIBO:", recibo_msj, height=240)
+      st.text_area("VISTA PREVIA DEL RECIBO:", recibo_msj, height=200)
       telefono = str(row["TELEFONO"]).strip().replace(" ", "").replace("+", "")
       whatsapp_link = f"https://wa.me/{telefono}?text={urllib.parse.quote(recibo_msj)}"
 
@@ -457,99 +490,206 @@ elif choice == "MUELLES":
     st.success("MUELLES ACTUALIZADOS.")
 
 # -----------------------------------------------------------------------------
-# 6. ELIMINAR REGISTROS
+# 6. EDITAR / ELIMINAR REGISTROS
 # -----------------------------------------------------------------------------
-elif choice == "ELIMINAR REGISTROS":
-  st.subheader("🗑️ MÓDULO DE ELIMINACIÓN DE REGISTROS")
-  st.warning("¡ATENCIÓN! LOS REGISTROS ELIMINADOS NO SE PUEDEN RECUPERAR.")
+elif choice == "EDITAR / ELIMINAR REGISTROS":
+  st.subheader("✏️ MÓDULO DE EDICIÓN Y ELIMINACIÓN DE REGISTROS")
+  st.markdown("Puedes editar directamente las celdas o eliminar filas enteras.")
 
   tab_del1, tab_del2, tab_del3, tab_del4, tab_del5 = st.tabs([
       "🚀 Operaciones Control", "👥 Clientes", "📍 Lugares", "🚢 Buques", "🏗️ Muelles"
   ])
 
   with tab_del1:
-    df_ops_del = run_query("""
-            SELECT c.IDCONTROL, cl.NOMBRE as CLIENTE, c.FECHAINICIO 
-            FROM control c
-            LEFT JOIN cliente cl ON c.CLIENTE = cl.IDCLIENTE
-        """)
-    if not df_ops_del.empty:
-      op_dict = dict(zip(df_ops_del["CLIENTE"].fillna("N/D") + " - " + df_ops_del["FECHAINICIO"], df_ops_del["IDCONTROL"]))
-      sel_del_op = st.selectbox("Seleccione Operación a Borrar", options=list(op_dict.keys()))
-      if st.button("🗑️ ELIMINAR OPERACIÓN SELECCIONADA"):
-        execute_query("DELETE FROM control WHERE IDCONTROL = ?", (op_dict[sel_del_op],))
-        st.success("¡Operación eliminada con éxito!")
-        st.rerun()
+    st.markdown("### Editar / Eliminar Operación de Alquiler")
+    df_ops_edit = run_query("SELECT * FROM control")
+    if not df_ops_edit.empty:
+      # Editor completo para la tabla control
+      ed_ops = st.data_editor(
+          df_ops_edit, 
+          num_rows="dynamic", 
+          use_container_width=True,
+          hide_index=True
+      )
+      if st.button("💾 GUARDAR CAMBIOS EN OPERACIONES"):
+        for col in ed_ops.select_dtypes(include=["object"]).columns:
+          ed_ops[col] = ed_ops[col].astype(str).str.upper()
+        conn = sqlite3.connect(DB_NAME)
+        ed_ops.to_sql("control", conn, if_exists="replace", index=False)
+        conn.close()
+        st.success("¡Operaciones actualizadas con éxito!")
+    else:
+      st.info("No hay operaciones registradas.")
 
   with tab_del2:
-    df_cli_del = run_query("SELECT IDCLIENTE, NOMBRE FROM cliente")
-    if not df_cli_del.empty:
-      cli_dict = dict(zip(df_cli_del["NOMBRE"], df_cli_del["IDCLIENTE"]))
-      sel_del_cli = st.selectbox("Seleccione Cliente a Borrar", options=list(cli_dict.keys()))
-      if st.button("🗑️ ELIMINAR CLIENTE SELECCIONADO"):
-        execute_query("DELETE FROM cliente WHERE IDCLIENTE = ?", (cli_dict[sel_del_cli],))
-        st.success("¡Cliente eliminado con éxito!")
-        st.rerun()
+    st.markdown("### Editar / Eliminar Cliente")
+    df_cli_edit = run_query("SELECT * FROM cliente")
+    if not df_cli_edit.empty:
+      ed_cli = st.data_editor(df_cli_edit, num_rows="dynamic", use_container_width=True, hide_index=True)
+      if st.button("💾 GUARDAR CAMBIOS EN CLIENTES"):
+        for col in ed_cli.select_dtypes(include=["object"]).columns:
+          ed_cli[col] = ed_cli[col].astype(str).str.upper()
+        conn = sqlite3.connect(DB_NAME)
+        ed_cli.to_sql("cliente", conn, if_exists="replace", index=False)
+        conn.close()
+        st.success("¡Clientes actualizados con éxito!")
+    else:
+      st.info("No hay clientes registrados.")
 
   with tab_del3:
-    df_lug_del = run_query("SELECT IDLUGAR, LUGAR FROM lugar")
-    if not df_lug_del.empty:
-      lug_dict = dict(zip(df_lug_del["LUGAR"], df_lug_del["IDLUGAR"]))
-      sel_del_lug = st.selectbox("Seleccione Lugar a Borrar", options=list(lug_dict.keys()))
-      if st.button("🗑️ ELIMINAR LUGAR SELECCIONADO"):
-        execute_query("DELETE FROM lugar WHERE IDLUGAR = ?", (lug_dict[sel_del_lug],))
-        st.success("¡Lugar eliminado con éxito!")
-        st.rerun()
+    st.markdown("### Editar / Eliminar Lugar")
+    df_lug_edit = run_query("SELECT * FROM lugar")
+    if not df_lug_edit.empty:
+      ed_lug = st.data_editor(df_lug_edit, num_rows="dynamic", use_container_width=True, hide_index=True)
+      if st.button("💾 GUARDAR CAMBIOS EN LUGARES"):
+        for col in ed_lug.select_dtypes(include=["object"]).columns:
+          ed_lug[col] = ed_lug[col].astype(str).str.upper()
+        conn = sqlite3.connect(DB_NAME)
+        ed_lug.to_sql("lugar", conn, if_exists="replace", index=False)
+        conn.close()
+        st.success("¡Lugares actualizados con éxito!")
+    else:
+      st.info("No hay lugares registrados.")
 
   with tab_del4:
-    df_buq_del = run_query("SELECT IDBUQUE, NOMBREBUQUE FROM buque")
-    if not df_buq_del.empty:
-      buq_dict = dict(zip(df_buq_del["NOMBREBUQUE"], df_buq_del["IDBUQUE"]))
-      sel_del_buq = st.selectbox("Seleccione Buque a Borrar", options=list(buq_dict.keys()))
-      if st.button("🗑️ ELIMINAR BUQUE SELECCIONADO"):
-        execute_query("DELETE FROM buque WHERE IDBUQUE = ?", (buq_dict[sel_del_buq],))
-        st.success("¡Buque eliminado con éxito!")
-        st.rerun()
+    st.markdown("### Editar / Eliminar Buque")
+    df_buq_edit = run_query("SELECT * FROM buque")
+    if not df_buq_edit.empty:
+      ed_buq = st.data_editor(df_buq_edit, num_rows="dynamic", use_container_width=True, hide_index=True)
+      if st.button("💾 GUARDAR CAMBIOS EN BUQUES"):
+        for col in ed_buq.select_dtypes(include=["object"]).columns:
+          ed_buq[col] = ed_buq[col].astype(str).str.upper()
+        conn = sqlite3.connect(DB_NAME)
+        ed_buq.to_sql("buque", conn, if_exists="replace", index=False)
+        conn.close()
+        st.success("¡Buques actualizados con éxito!")
+    else:
+      st.info("No hay buques registrados.")
 
   with tab_del5:
-    df_mue_del = run_query("SELECT IDMUELLE, NUMEROMUELLE FROM muelle")
-    if not df_mue_del.empty:
-      mue_dict = dict(zip(df_mue_del["NUMEROMUELLE"].astype(str), df_mue_del["IDMUELLE"]))
-      sel_del_mue = st.selectbox("Seleccione Muelle a Borrar", options=list(mue_dict.keys()))
-      if st.button("🗑️ ELIMINAR MUELLE SELECCIONADO"):
-        execute_query("DELETE FROM muelle WHERE IDMUELLE = ?", (mue_dict[sel_del_mue],))
-        st.success("¡Muelle eliminado con éxito!")
-        st.rerun()
+    st.markdown("### Editar / Eliminar Muelle")
+    df_mue_edit = run_query("SELECT * FROM muelle")
+    if not df_mue_edit.empty:
+      ed_mue = st.data_editor(df_mue_edit, num_rows="dynamic", use_container_width=True, hide_index=True)
+      if st.button("💾 GUARDAR CAMBIOS EN MUELLES"):
+        for col in ed_mue.select_dtypes(include=["object"]).columns:
+          ed_mue[col] = ed_mue[col].astype(str).str.upper()
+        conn = sqlite3.connect(DB_NAME)
+        ed_mue.to_sql("muelle", conn, if_exists="replace", index=False)
+        conn.close()
+        st.success("¡Muelles actualizados con éxito!")
+    else:
+      st.info("No hay muelles registrados.")
 
+# -----------------------------------------------------------------------------
+# 7. REPORTES Y RESUMEN POR PERIODO (CON FILTROS)
+# -----------------------------------------------------------------------------
 elif choice == "REPORTES Y RESUMEN":
-  st.subheader("RESUMEN DE OPERACIONES Y ESTADÍSTICAS EN USD")
+  st.subheader("📊 REPORTES Y ESTADÍSTICAS AVANZADAS")
   query_sql = """
-        SELECT cl.NOMBRE as CLIENTE_NOMBRE, l.LUGAR as LUGAR_NOMBRE, 
-               c.FECHAINICIO, c.FECHATERMINACION, c.NUMEROCABINAS
+        SELECT c.IDCONTROL, cl.NOMBRE as CLIENTE_NOMBRE, l.LUGAR as LUGAR_NOMBRE, 
+               b.NOMBREBUQUE, m.NUMEROMUELLE, c.FECHAINICIO, c.FECHATERMINACION, c.NUMEROCABINAS, c.TARIFA
         FROM control c
         LEFT JOIN cliente cl ON c.CLIENTE = cl.IDCLIENTE
         LEFT JOIN lugar l ON c.LUGAR = l.IDLUGAR
+        LEFT JOIN buque b ON c.BUQUE = b.IDBUQUE
+        LEFT JOIN muelle m ON c.MUELLE = m.IDMUELLE
     """
   df_rep = run_query(query_sql)
+  
   if not df_rep.empty:
     df_rep["FECHAINICIO_DT"] = pd.to_datetime(df_rep["FECHAINICIO"], errors="coerce")
     df_rep["FECHATERMINACION_DT"] = pd.to_datetime(df_rep["FECHATERMINACION"], errors="coerce")
     df_rep["DIAS"] = (df_rep["FECHATERMINACION_DT"] - df_rep["FECHAINICIO_DT"]).dt.days + 1
     df_rep["DIAS"] = df_rep["DIAS"].fillna(1).apply(lambda x: max(1, x))
-    df_rep["TARIFA_USD"] = 25.0
-    df_rep["TOTAL_USD"] = df_rep["DIAS"] * df_rep["NUMEROCABINAS"].fillna(1) * df_rep["TARIFA_USD"]
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("INGRESOS TOTALES", f"${df_rep['TOTAL_USD'].sum():,.2f} USD")
-    c2.metric("OPERACIONES", len(df_rep))
-    c3.metric("PROMEDIO BAÑOS", f"{df_rep['NUMEROCABINAS'].mean():.1f}")
     
-    st.divider()
-    res_cli = df_rep.groupby("CLIENTE_NOMBRE")["TOTAL_USD"].sum().reset_index()
-    st.bar_chart(res_cli.set_index("CLIENTE_NOMBRE"))
+    df_rep["NUMEROCABINAS"] = pd.to_numeric(df_rep["NUMEROCABINAS"], errors="coerce").fillna(1)
+    df_rep["TARIFA"] = pd.to_numeric(df_rep["TARIFA"], errors="coerce")
+    
+    df_rep["TARIFA_USD"] = df_rep["TARIFA"].fillna(25.0)
+    df_rep["TOTAL_USD"] = df_rep["DIAS"] * df_rep["NUMEROCABINAS"] * df_rep["TARIFA_USD"]
 
+    # ---- SECCIÓN DE FILTROS (SIDEBAR) ----
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔍 FILTROS DE REPORTE")
+    
+    # Filtro por Fechas
+    min_date = df_rep["FECHAINICIO_DT"].min().date() if not pd.isna(df_rep["FECHAINICIO_DT"].min()) else date.today()
+    max_date = df_rep["FECHATERMINACION_DT"].max().date() if not pd.isna(df_rep["FECHATERMINACION_DT"].max()) else date.today()
+    
+    rango_fechas = st.sidebar.date_input(
+        "Rango de Fechas",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        format="DD/MM/YYYY"
+    )
+
+    # Filtros por Atributos (Multiselect)
+    clientes_unicos = df_rep["CLIENTE_NOMBRE"].dropna().unique().tolist()
+    filtro_clientes = st.sidebar.multiselect("Filtrar por Clientes", options=clientes_unicos, default=clientes_unicos)
+
+    lugares_unicos = df_rep["LUGAR_NOMBRE"].dropna().unique().tolist()
+    filtro_lugares = st.sidebar.multiselect("Filtrar por Lugares / Puertos", options=lugares_unicos, default=lugares_unicos)
+
+    buques_unicos = df_rep["NOMBREBUQUE"].dropna().unique().tolist()
+    filtro_buques = st.sidebar.multiselect("Filtrar por Buques", options=buques_unicos, default=buques_unicos)
+
+    # --- APLICAR FILTROS AL DATAFRAME ---
+    df_filtrado = df_rep.copy()
+    
+    if len(rango_fechas) == 2:
+        f_ini, f_fin = rango_fechas
+        df_filtrado = df_filtrado[
+            (df_filtrado["FECHAINICIO_DT"].dt.date >= f_ini) & 
+            (df_filtrado["FECHATERMINACION_DT"].dt.date <= f_fin)
+        ]
+        
+    df_filtrado = df_filtrado[df_filtrado["CLIENTE_NOMBRE"].isin(filtro_clientes)]
+    df_filtrado = df_filtrado[df_filtrado["LUGAR_NOMBRE"].isin(filtro_lugares)]
+    df_filtrado = df_filtrado[df_filtrado["NOMBREBUQUE"].isin(filtro_buques)]
+
+    if not df_filtrado.empty:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("INGRESOS TOTALES (FILTRADOS)", f"${df_filtrado['TOTAL_USD'].sum():,.2f} USD")
+        c2.metric("OPERACIONES (FILTRADAS)", len(df_filtrado))
+        c3.metric("BAÑOS ALQUILADOS (TOTAL)", f"{int(df_filtrado['NUMEROCABINAS'].sum())}")
+        
+        st.divider()
+        st.markdown("### 📈 INGRESOS POR CLIENTE (FILTRADO)")
+        res_cli = df_filtrado.groupby("CLIENTE_NOMBRE")["TOTAL_USD"].sum().reset_index()
+        st.bar_chart(res_cli.set_index("CLIENTE_NOMBRE"))
+        
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("### 🏢 DESGLOSE POR CLIENTE")
+            st.dataframe(res_cli, hide_index=True, use_container_width=True)
+            
+        with col_t2:
+            st.markdown("### 📍 DESGLOSE POR PUERTO / LUGAR")
+            res_lug = df_filtrado.groupby("LUGAR_NOMBRE")["TOTAL_USD"].sum().reset_index()
+            st.dataframe(res_lug, hide_index=True, use_container_width=True)
+            
+        st.markdown("### 📋 TABLA DETALLADA DE OPERACIONES FILTRADAS")
+        df_mostrar = df_filtrado.copy()
+        df_mostrar["FECHAINICIO"] = df_mostrar["FECHAINICIO_DT"].dt.strftime("%d/%m/%Y")
+        df_mostrar["FECHATERMINACION"] = df_mostrar["FECHATERMINACION_DT"].dt.strftime("%d/%m/%Y")
+        st.dataframe(
+            df_mostrar[["IDCONTROL", "CLIENTE_NOMBRE", "LUGAR_NOMBRE", "NOMBREBUQUE", "FECHAINICIO", "FECHATERMINACION", "NUMEROCABINAS", "TOTAL_USD"]],
+            hide_index=True, use_container_width=True
+        )
+
+    else:
+        st.warning("⚠️ No hay datos que coincidan con los filtros seleccionados.")
+  else:
+    st.info("NO HAY DATOS SUFICIENTES PARA LOS REPORTES.")
+
+# -----------------------------------------------------------------------------
+# 8. CONFIGURACIÓN DE RECIBO WHATSAPP
+# -----------------------------------------------------------------------------
 elif choice == "CONFIGURACIÓN RECIBO WHATSAPP":
   st.subheader("CONFIGURACIÓN DE DATOS FISCALES DE LA EMPRESA")
+  st.markdown("Modifique los datos de la empresa que saldrán reflejados en el recibo enviado por WhatsApp.")
   df_emp = run_query("SELECT * FROM empresa LIMIT 1")
   if not df_emp.empty:
     row_e = df_emp.iloc[0]
