@@ -118,29 +118,29 @@ if choice == "CONTROL OPERATIVO":
     col1, col2 = st.columns(2)
 
     with col1:
-      # --- CLIENTE ---
-      lista_clientes = (
-          df_cli["NOMBRE"].tolist() if not df_cli.empty else []
-      )
-      lista_clientes.insert(0, "➕ [ AGREGAR NUEVO CLIENTE ]")
-      sel_cli = st.selectbox("CLIENTE", options=lista_clientes)
+      st.markdown("### 🏢 CLIENTE")
+      is_nuevo_cli = st.checkbox("➕ AGREGAR NUEVO CLIENTE")
 
-      nuevo_cli_input, nuevo_rif_input, nuevo_dir_input, nuevo_tlf_input = (
-          "",
-          "",
-          "",
-          "",
-      )
-
-      if sel_cli == "➕ [ AGREGAR NUEVO CLIENTE ]":
-        st.markdown("---")
-        st.markdown("*DATOS DEL NUEVO CLIENTE:*")
+      if is_nuevo_cli:
         nuevo_cli_input = st.text_input("NOMBRE O RAZÓN SOCIAL (NUEVO)").upper()
         nuevo_rif_input = st.text_input("RIF (NUEVO)").upper()
         nuevo_dir_input = st.text_input("DIRECCIÓN (NUEVA)").upper()
         nuevo_tlf_input = st.text_input("TELÉFONO (NUEVO)").upper()
-        st.markdown("---")
+        sel_cli = None
       else:
+        lista_clientes = (
+            df_cli["NOMBRE"].tolist() if not df_cli.empty else []
+        )
+        sel_cli = st.selectbox(
+            "SELECCIONE CLIENTE EXISTENTE", options=lista_clientes
+        )
+        nuevo_cli_input, nuevo_rif_input, nuevo_dir_input, nuevo_tlf_input = (
+            "",
+            "",
+            "",
+            "",
+        )
+
         if sel_cli and not df_cli.empty:
           cli_row = df_cli[df_cli["NOMBRE"] == sel_cli]
           if not cli_row.empty:
@@ -149,52 +149,59 @@ if choice == "CONTROL OPERATIVO":
                 f"📌 **DATOS DEL CLIENTE:**\n\n"
                 f"- **RIF:** {r.get('RIF', 'N/D')}\n"
                 f"- **DIRECCIÓN:** {r.get('DIRECCION', 'N/D')}\n"
-                f"- **TELÉFONO:** {r.get('TELEFONO', 'N/D')}"
+                f"- **TELÉFONO:** {r.get('TELÉFONO', r.get('TELEFONO', 'N/D'))}"
             )
 
-      # --- LUGAR / PUERTO ---
-      lista_lugares = df_lug["LUGAR"].tolist() if not df_lug.empty else []
-      lista_lugares.insert(0, "➕ [ AGREGAR NUEVO LUGAR ]")
-      sel_lug = st.selectbox("LUGAR / PUERTO", options=lista_lugares)
+      st.markdown("---")
+      st.markdown("### 📍 LUGAR / PUERTO")
+      is_nuevo_lug = st.checkbox("➕ AGREGAR NUEVO LUGAR")
 
-      nuevo_lug_input = ""
-      if sel_lug == "➕ [ AGREGAR NUEVO LUGAR ]":
-        st.markdown("---")
-        st.markdown("*DATOS DEL NUEVO LUGAR:*")
+      if is_nuevo_lug:
         nuevo_lug_input = st.text_input("NOMBRE DEL LUGAR / PUERTO (NUEVO)").upper()
-        st.markdown("---")
+        sel_lug = None
+      else:
+        lista_lugares = df_lug["LUGAR"].tolist() if not df_lug.empty else []
+        sel_lug = st.selectbox(
+            "SELECCIONE LUGAR EXISTENTE", options=lista_lugares
+        )
+        nuevo_lug_input = ""
 
-      # --- BUQUE ---
-      lista_buques = (
-          df_buq["NOMBREBUQUE"].tolist() if not df_buq.empty else []
-      )
-      lista_buques.insert(0, "➕ [ AGREGAR NUEVO BUQUE ]")
-      sel_buq = st.selectbox("BUQUE", options=lista_buques)
+      st.markdown("---")
+      st.markdown("### 🚢 BUQUE")
+      is_nuevo_buq = st.checkbox("➕ AGREGAR NUEVO BUQUE")
 
-      nuevo_buq_input = ""
-      if sel_buq == "➕ [ AGREGAR NUEVO BUQUE ]":
-        st.markdown("---")
-        st.markdown("*DATOS DEL NUEVO BUQUE:*")
+      if is_nuevo_buq:
         nuevo_buq_input = st.text_input("NOMBRE DEL BUQUE (NUEVO)").upper()
-        st.markdown("---")
+        sel_buq = None
+      else:
+        lista_buques = (
+            df_buq["NOMBREBUQUE"].tolist() if not df_buq.empty else []
+        )
+        sel_buq = st.selectbox(
+            "SELECCIONE BUQUE EXISTENTE", options=lista_buques
+        )
+        nuevo_buq_input = ""
 
     with col2:
-      # --- MUELLE ---
-      lista_muelles = (
-          df_mue["NUMEROMUELLE"].astype(str).tolist()
-          if not df_mue.empty
-          else []
-      )
-      lista_muelles.insert(0, "➕ [ AGREGAR NUEVO MUELLE ]")
-      sel_mue = st.selectbox("MUELLE", options=lista_muelles)
+      st.markdown("### 🏗️ MUELLE")
+      is_nuevo_mue = st.checkbox("➕ AGREGAR NUEVO MUELLE")
 
-      nuevo_mue_input = ""
-      if sel_mue == "➕ [ AGREGAR NUEVO MUELLE ]":
-        st.markdown("---")
-        st.markdown("*DATOS DEL NUEVO MUELLE:*")
+      if is_nuevo_mue:
         nuevo_mue_input = st.text_input("NÚMERO DE MUELLE (NUEVO)").upper()
-        st.markdown("---")
+        sel_mue = None
+      else:
+        lista_muelles = (
+            df_mue["NUMEROMUELLE"].astype(str).tolist()
+            if not df_mue.empty
+            else []
+        )
+        sel_mue = st.selectbox(
+            "SELECCIONE MUELLE EXISTENTE", options=lista_muelles
+        )
+        nuevo_mue_input = ""
 
+      st.markdown("---")
+      st.markdown("### 📅 DATOS OPERATIVOS Y TARIFAS")
       # Fechas (Formato visual DD/MM/AA)
       f_inicio = st.date_input("FECHA DE INICIO (DD/MM/AA)", date.today())
       f_terminacion = st.date_input(
@@ -212,9 +219,9 @@ if choice == "CONTROL OPERATIVO":
 
     if submitted:
       # 1. Procesar Cliente
-      if sel_cli == "➕ [ AGREGAR NUEVO CLIENTE ]":
+      if is_nuevo_cli:
         if not nuevo_cli_input:
-          st.error("EL NOMBRE DEL CLIENTE ES OBLIGATORIO.")
+          st.error("EL NOMBRE DEL NUEVO CLIENTE ES OBLIGATORIO.")
           st.stop()
         c_id = str(uuid.uuid4())[:8].upper()
         execute_query(
@@ -229,12 +236,15 @@ if choice == "CONTROL OPERATIVO":
             ),
         )
       else:
+        if not sel_cli:
+          st.error("DEBE SELECCIONAR UN CLIENTE.")
+          st.stop()
         c_id = df_cli[df_cli["NOMBRE"] == sel_cli]["IDCLIENTE"].values[0]
 
       # 2. Procesar Lugar
-      if sel_lug == "➕ [ AGREGAR NUEVO LUGAR ]":
+      if is_nuevo_lug:
         if not nuevo_lug_input:
-          st.error("EL NOMBRE DEL LUGAR ES OBLIGATORIO.")
+          st.error("EL NOMBRE DEL NUEVO LUGAR ES OBLIGATORIO.")
           st.stop()
         l_id = str(uuid.uuid4())[:8].upper()
         execute_query(
@@ -242,12 +252,15 @@ if choice == "CONTROL OPERATIVO":
             (l_id, nuevo_lug_input),
         )
       else:
+        if not sel_lug:
+          st.error("DEBE SELECCIONAR UN LUGAR.")
+          st.stop()
         l_id = df_lug[df_lug["LUGAR"] == sel_lug]["IDLUGAR"].values[0]
 
       # 3. Procesar Buque
-      if sel_buq == "➕ [ AGREGAR NUEVO BUQUE ]":
+      if is_nuevo_buq:
         if not nuevo_buq_input:
-          st.error("EL NOMBRE DEL BUQUE ES OBLIGATORIO.")
+          st.error("EL NOMBRE DEL NUEVO BUQUE ES OBLIGATORIO.")
           st.stop()
         b_id = str(uuid.uuid4())[:8].upper()
         execute_query(
@@ -255,12 +268,15 @@ if choice == "CONTROL OPERATIVO":
             (b_id, nuevo_buq_input),
         )
       else:
+        if not sel_buq:
+          st.error("DEBE SELECCIONAR UN BUQUE.")
+          st.stop()
         b_id = df_buq[df_buq["NOMBREBUQUE"] == sel_buq]["IDBUQUE"].values[0]
 
       # 4. Procesar Muelle
-      if sel_mue == "➕ [ AGREGAR NUEVO MUELLE ]":
+      if is_nuevo_mue:
         if not nuevo_mue_input:
-          st.error("EL NÚMERO DE MUELLE ES OBLIGATORIO.")
+          st.error("EL NÚMERO DEL NUEVO MUELLE ES OBLIGATORIO.")
           st.stop()
         m_id = str(uuid.uuid4())[:8].upper()
         execute_query(
@@ -268,6 +284,9 @@ if choice == "CONTROL OPERATIVO":
             (m_id, nuevo_mue_input),
         )
       else:
+        if not sel_mue:
+          st.error("DEBE SELECCIONAR UN MUELLE.")
+          st.stop()
         m_id = df_mue[df_mue["NUMEROMUELLE"].astype(str) == sel_mue][
             "IDMUELLE"
         ].values[0]
@@ -295,17 +314,6 @@ if choice == "CONTROL OPERATIVO":
   st.divider()
   st.subheader("HISTORIAL DE OPERACIONES Y ENVÍO DE RECIBO POR WHATSAPP")
 
-  query_sql = """
-        SELECT c.IDCONTROL, cl.NOMBRE as CLIENTE_NOMBRE, l.LUGAR as LUGAR_NOMBRE, 
-               b.NOMBREBUQUE, m.NUMEROMUELLE, c.FECHAINICIO, c.FECHATERMINACION, 
-               c.NUMEROCABINAS, c.OBSERVACIONES, cl.TELEFONO
-        FROM control c
-        LEFT JOIN cliente cl c.CLIENTE = cl.IDCLIENTE
-        LEFT JOIN lugar l ON c.LUGAR = l.IDLUGAR
-        LEFT JOIN buque b ON c.BUQUE = b.IDBUQUE
-        LEFT JOIN muelle m ON c.MUELLE = m.IDMUELLE
-    """
-  # Corrección de sintaxis en el join anterior
   query_sql = """
         SELECT c.IDCONTROL, cl.NOMBRE as CLIENTE_NOMBRE, l.LUGAR as LUGAR_NOMBRE, 
                b.NOMBREBUQUE, m.NUMEROMUELLE, c.FECHAINICIO, c.FECHATERMINACION, 
@@ -543,7 +551,7 @@ elif choice == "MUELLES":
     st.success("MUELLES ACTUALIZADOS.")
 
 # -----------------------------------------------------------------------------
-# 6. ELIMINAR REGISTROS (NUEVO MÓDULO DE BORRADO SEGURO)
+# 6. ELIMINAR REGISTROS
 # -----------------------------------------------------------------------------
 elif choice == "ELIMINAR REGISTROS":
   st.subheader("🗑️ MÓDULO DE ELIMINACIÓN DE REGISTROS")
